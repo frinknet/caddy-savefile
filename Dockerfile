@@ -20,37 +20,51 @@ RUN case "${TARGETARCH}" in \
 # ---------------------------------------------------------------------------
 # Stage B: Build caddy binary. Source-dependent, uses shared go cache.
 # ---------------------------------------------------------------------------
-WORKDIR /build
-COPY . /src/caddy-savefile
+WORKDIR /src
+
+# cache the module downloads separately from the source
+COPY go.mod go.sum ./
+RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+# pick up any newly uncommented imports
+RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
+    go mod tidy
 
 RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
     --mount=type=cache,id=gobuild,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
     xcaddy build \
     --with github.com/frinknet/caddy-savefile \
-    --replace github.com/frinknet/caddy-savefile=/src/caddy-savefile \
+    --replace github.com/frinknet/caddy-savefile=/src \
     --output /out/caddy \
     && upx --best --lzma /out/caddy
 
+# collect the licenses of caddy and every plugin linked into the binary
 RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
-    GOMODCACHE=$(go env GOMODCACHE) && \
-    mkdir -p /out/licenses/caddy /out/licenses/plugins && \
-    for f in "$GOMODCACHE"/github.com/caddyserver/caddy/v2@*/LICENSE*; do \
-        [ -e "$f" ] && cp "$f" /out/licenses/caddy/; \
-    done && \
-    go version -m /out/caddy | awk '$1 == "dep" {print $2 "@" $3}' | while read -r modver; do \
+    sh -euxc ' \
+      GOMODCACHE=$(go env GOMODCACHE); \
+      mkdir -p /out/licenses/caddy /out/licenses/plugins; \
+      go version -m /out/caddy > /out/versions.txt; \
+      for f in "$GOMODCACHE"/github.com/caddyserver/caddy/v2@*/LICENSE*; do \
+        if [ -e "$f" ]; then cp "$f" /out/licenses/caddy/; fi; \
+      done; \
+      go version -m /out/caddy | awk '"'"'$1 == "dep" {print $2 "@" $3}'"'"' | while read -r modver; do \
         mod="${modver%@*}"; \
-        escaped=$(echo "$modver" | sed 's/[A-Z]/!\L&/g'); \
+        escaped=$(printf "%s" "$modver" | sed '"'"'s/[A-Z]/!\L&/g'"'"'); \
         dir="$GOMODCACHE/$escaped"; \
         if [ -d "$dir" ]; then \
-            pkg=$(echo "$mod" | tr / _); \
-            dest="/out/licenses/plugins/$pkg"; \
-            mkdir -p "$dest"; \
-            for lf in "$dir"/LICENSE* "$dir"/NOTICE*; do \
-                [ -e "$lf" ] && cp "$lf" "$dest/"; \
-            done; \
+          pkg=$(printf "%s" "$mod" | tr / _); \
+          dest="/out/licenses/plugins/$pkg"; \
+          mkdir -p "$dest"; \
+          for lf in "$dir"/LICENSE* "$dir"/NOTICE*; do \
+            if [ -e "$lf" ]; then cp "$lf" "$dest/"; fi; \
+          done; \
         fi; \
-    done
+      done; \
+      ls /out/licenses/plugins | wc -l'
 
 # ---------------------------------------------------------------------------
 # Stage C: Compose scratch image
@@ -58,17 +72,17 @@ RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
 FROM scratch
 
 COPY --from=build /out/licenses             /usr/share/licenses
+COPY --from=build /out/versions.txt          /usr/share/licenses/versions.txt
 COPY --from=build /etc/ssl/certs           /etc/ssl/certs
 COPY --from=build /usr/share/zoneinfo      /usr/share/zoneinfo
 COPY --from=build /out/caddy               /bin/caddy
 COPY --from=build /out/toybox              /bin/toybox
 COPY             www                       /srv/www
 
+# populate toybox
 RUN ["/bin/toybox", "sh", "-c", "cd /bin && for i in $(./toybox); do if [ \"$i\" != toybox ]; then ./toybox ln -s toybox \"$i\"; fi; done && test -L /bin/sh && test -L /bin/ls"]
 RUN mkdir -p /etc/caddy /var/lib/caddy /var/cache/caddy /tmp && chmod 1777 /tmp
 RUN mv /srv/www/Caddyfile /etc/caddy/Caddyfile
-
-VOLUME ["/var/lib/caddy"]
 
 ENV PATH="/bin:/usr/bin:/usr/local/bin"
 ENV XDG_CONFIG_HOME="/etc/caddy"
@@ -84,4 +98,4 @@ EXPOSE 80 443 443/udp
 
 WORKDIR /srv/www
 ENTRYPOINT ["/bin/caddy"]
-CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+CMD ["run"]

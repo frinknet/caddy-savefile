@@ -1,1 +1,6 @@
 AGENTS.md
+BACKLOG.md
+*.swp
+*.swo
+*~
+.env
