@@ -20,7 +20,7 @@ func jsonRequest(contentType, body string) *http.Request {
 func ensureJSON(t *testing.T, req *http.Request) (*FormState, error) {
 	t.Helper()
 
-	state, err := Ensure(req, 4096, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 4096, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestIngestJSONIgnoresOtherMediaTypes(t *testing.T) {
 func TestIngestJSONSkipsConsumedState(t *testing.T) {
 	req := jsonRequest("application/json", `{"username": "alice"}`)
 
-	state := &FormState{Values: url.Values{}, maxSize: 4096, tempDir: t.TempDir()}
+	state := &FormState{Values: url.Values{}, limits: Limits{MaxPartSize: 4096, TempDir: t.TempDir()}}
 	state.consumed = true
 
 	if err := state.IngestJSON(req); err != nil {

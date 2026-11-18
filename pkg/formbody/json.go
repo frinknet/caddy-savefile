@@ -27,12 +27,15 @@ func (st *FormState) IngestJSON(r *http.Request) error {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil
 	}
+	if r.ContentLength > st.limits.MaxPartSize {
+		return caddyhttp.Error(http.StatusRequestEntityTooLarge, paths.ErrTooLarge)
+	}
 
-	raw, err := io.ReadAll(io.LimitReader(r.Body, st.maxSize+1))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, st.limits.MaxPartSize+1))
 	if err != nil {
 		return caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("reading JSON body: %w", err))
 	}
-	if int64(len(raw)) > st.maxSize {
+	if int64(len(raw)) > st.limits.MaxPartSize {
 		return caddyhttp.Error(http.StatusRequestEntityTooLarge, paths.ErrTooLarge)
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {

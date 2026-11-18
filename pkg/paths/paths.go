@@ -58,10 +58,27 @@ func SanitizeFilename(name string) string {
 	if out == "" {
 		return "file"
 	}
-	if len(out) > maxFilenameLen {
-		out = out[:maxFilenameLen]
+	return truncateBytes(out, maxFilenameLen)
+}
+
+// truncateBytes cuts s to at most max bytes without splitting a rune, so a long
+// multi-byte name cannot be turned into invalid UTF-8.
+func truncateBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return out
+
+	cut := 0
+	for i := range s {
+		if i > max {
+			break
+		}
+		cut = i
+	}
+	if cut == 0 {
+		return s
+	}
+	return s[:cut]
 }
 
 // SanitizeRelPath sanitizes each segment of a relative subpath, dropping empty
@@ -181,11 +198,35 @@ func splitMime(s string) (string, string) {
 }
 
 // EnsureDir creates dir and its parents when dir is set.
-func EnsureDir(dir string) error {
+func EnsureDir(dir string, perm os.FileMode) error {
 	if dir == "" {
 		return nil
 	}
-	return os.MkdirAll(dir, 0o700)
+	return os.MkdirAll(dir, perm)
+}
+
+// ProbeWritable verifies that dir exists and accepts a new file, catching a
+// missing mount or a read-only filesystem at config load instead of per request.
+func ProbeWritable(dir string, perm os.FileMode) error {
+	if dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+
+	file, err := os.CreateTemp(dir, ".caddy-savefile-probe-*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+
+	if _, err := file.Write([]byte{0}); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 // NewUUID returns a random RFC 4122 version 4 UUID.

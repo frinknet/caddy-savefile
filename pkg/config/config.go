@@ -12,6 +12,8 @@ import (
 
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
+
+	"github.com/frinknet/caddy-savefile/pkg/paths"
 )
 
 const (
@@ -19,22 +21,30 @@ const (
 	DefaultRootDir = "./uploads"
 	// DefaultMaxSize is the per-file limit used when max_size is not set.
 	DefaultMaxSize = int64(10 << 20)
+	// DefaultMaxParts is the part-count limit used when max_parts is not set.
+	DefaultMaxParts = 100
+	// DefaultVerifyMime is how strictly a declared type is believed.
+	DefaultVerifyMime = paths.VerifyMimeOn
 )
 
 // Config holds the storage boundaries shared by the HTTP handlers and the
 // template action.
 type Config struct {
-	RootDir string `json:"root_dir,omitempty"`
-	MaxSize int64  `json:"max_size,omitempty"`
-	TempDir string `json:"temp_dir,omitempty"`
+	RootDir    string `json:"root_dir,omitempty"`
+	MaxSize    int64  `json:"max_size,omitempty"`
+	MaxParts   int    `json:"max_parts,omitempty"`
+	TempDir    string `json:"temp_dir,omitempty"`
+	VerifyMime string `json:"verify_mime,omitempty"`
 }
 
 // Defaults returns the configuration used when the global block is absent.
 func Defaults() Config {
 	return Config{
-		RootDir: DefaultRootDir,
-		MaxSize: DefaultMaxSize,
-		TempDir: os.TempDir(),
+		RootDir:    DefaultRootDir,
+		MaxSize:    DefaultMaxSize,
+		MaxParts:   DefaultMaxParts,
+		TempDir:    os.TempDir(),
+		VerifyMime: DefaultVerifyMime,
 	}
 }
 
@@ -103,9 +113,27 @@ func parseGlobalOption(d *caddyfile.Dispenser, existing any) (any, error) {
 				return nil, d.Errf("parsing max_size: %v", err)
 			}
 			cfg.MaxSize = size
+		case "max_parts":
+			var raw string
+			if !d.Args(&raw) {
+				return nil, d.ArgErr()
+			}
+			parts, err := strconv.Atoi(raw)
+			if err != nil || parts <= 0 {
+				return nil, d.Errf("max_parts must be a positive integer, got %q", raw)
+			}
+			cfg.MaxParts = parts
 		case "temp_dir":
 			if !d.Args(&cfg.TempDir) {
 				return nil, d.ArgErr()
+			}
+		case "verify_mime":
+			if !d.Args(&cfg.VerifyMime) {
+				return nil, d.ArgErr()
+			}
+			if !paths.ValidVerifyMime(cfg.VerifyMime) {
+				return nil, d.Errf("verify_mime must be one of %s, %s, %s, got %q",
+					paths.VerifyMimeOn, paths.VerifyMimeStrict, paths.VerifyMimeOff, cfg.VerifyMime)
 			}
 		default:
 			return nil, d.Errf("unrecognized savefile option: %s", d.Val())

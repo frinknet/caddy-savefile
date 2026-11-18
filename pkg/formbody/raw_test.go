@@ -23,7 +23,7 @@ func TestIngestRawBodyBuffersTheBody(t *testing.T) {
 	tempDir := t.TempDir()
 	req := rawRequest(t, "/upload/photo.png", "image/png", "png-bytes")
 
-	state, err := Ensure(req, 4096, tempDir)
+	state, err := Ensure(req, Limits{MaxPartSize: 4096, TempDir: tempDir})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestIngestRawBodyBuffersTheBody(t *testing.T) {
 func TestIngestRawBodyDerivesFilenameAndSniffsMime(t *testing.T) {
 	req := rawRequest(t, "/upload", "application/octet-stream", "<!DOCTYPE html><html></html>")
 
-	state, err := Ensure(req, 4096, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 4096, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestIngestRawBodyHonoursContentDisposition(t *testing.T) {
 	req := rawRequest(t, "/upload", "application/pdf", "%PDF-1.4")
 	req.Header.Set("Content-Disposition", `attachment; filename="report.pdf"`)
 
-	state, err := Ensure(req, 4096, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 4096, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestIngestRawBodyHonoursContentDisposition(t *testing.T) {
 func TestIngestRawBodyLeavesClaimedBodiesAlone(t *testing.T) {
 	req := formRequest(url.Values{"username": {"alice"}})
 
-	state, err := Ensure(req, 4096, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 4096, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestIngestRawBodyIgnoresEmptyBodies(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/upload", nil)
 	req.Header.Set("Content-Type", "image/png")
 
-	state, err := Ensure(req, 4096, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 4096, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestIngestRawBodyIgnoresEmptyBodies(t *testing.T) {
 func TestIngestRawBodyRejectsOversizeBody(t *testing.T) {
 	req := rawRequest(t, "/upload", "application/octet-stream", strings.Repeat("x", 8192))
 
-	state, err := Ensure(req, 16, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 16, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}

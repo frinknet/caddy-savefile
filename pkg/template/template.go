@@ -14,6 +14,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	caddytpl "github.com/caddyserver/caddy/v2/modules/caddyhttp/templates"
+	"go.uber.org/zap"
 
 	"github.com/frinknet/caddy-savefile/pkg/config"
 	"github.com/frinknet/caddy-savefile/pkg/paths"
@@ -34,6 +35,8 @@ type SaveFileFunc struct {
 
 	// TempDir is the scratch directory used while writing.
 	TempDir string `json:"temp_dir,omitempty"`
+
+	logger *zap.Logger
 }
 
 // CaddyModule returns the Caddy module information.
@@ -45,7 +48,8 @@ func (SaveFileFunc) CaddyModule() caddy.ModuleInfo {
 }
 
 // Provision fills unset fields from the global savefile options.
-func (f *SaveFileFunc) Provision(caddy.Context) error {
+func (f *SaveFileFunc) Provision(ctx caddy.Context) error {
+	f.logger = ctx.Logger()
 	global := config.Global()
 	if f.RootDir == "" {
 		f.RootDir = global.RootDir
@@ -55,6 +59,12 @@ func (f *SaveFileFunc) Provision(caddy.Context) error {
 	}
 	if f.TempDir == "" {
 		f.TempDir = global.TempDir
+	}
+	if err := paths.ProbeWritable(f.RootDir, 0o755); err != nil {
+		return fmt.Errorf("savefile: root_dir %q is unusable: %w", f.RootDir, err)
+	}
+	if err := paths.ProbeWritable(f.TempDir, 0o700); err != nil {
+		return fmt.Errorf("savefile: temp_dir %q is unusable: %w", f.TempDir, err)
 	}
 	return nil
 }
@@ -97,7 +107,7 @@ func (f SaveFileFunc) save(filename string, content any) (string, error) {
 		defer closer.Close()
 	}
 
-	if err := paths.EnsureDir(f.tempDir()); err != nil {
+	if err := paths.EnsureDir(f.tempDir(), 0o700); err != nil {
 		return "", fmt.Errorf("savefile: %w", err)
 	}
 
@@ -115,14 +125,26 @@ func (f SaveFileFunc) save(filename string, content any) (string, error) {
 		os.Remove(tempPath)
 		return "", fmt.Errorf("savefile: %w", err)
 	}
-	_ = size
 
 	if err := paths.MoveFile(tempPath, destination); err != nil {
 		os.Remove(tempPath)
 		return "", fmt.Errorf("savefile: %w", err)
 	}
 
+	f.log().Debug("wrote template output",
+		zap.String("path", relative),
+		zap.Int64("bytes", size),
+	)
+
 	return filepath.ToSlash(relative), nil
+}
+
+// log returns the provisioned logger, or a no-op one when Provision has not run.
+func (f SaveFileFunc) log() *zap.Logger {
+	if f.logger == nil {
+		return zap.NewNop()
+	}
+	return f.logger
 }
 
 func (f SaveFileFunc) maxSize() int64 {

@@ -7,8 +7,10 @@
 
 	<h1>Submission received from {{$user}}</h1>
 
+	{{if $notes}}
 	{{$receipt := savefile (printf "receipts/%s-notes.txt" $user) $notes}}
 	<p>Saved form notes to: <code>{{$receipt}}</code></p>
+	{{end}}
 
 	<p>Form fields are also available as <code>{{"{{"}}placeholder "http.vars.form.username"{{"}}"}}</code>.</p>
 

@@ -76,7 +76,7 @@ func withReplacer(r *http.Request) *http.Request {
 }
 
 func TestEnsureParsesURLEncodedForm(t *testing.T) {
-	state, err := Ensure(formRequest(url.Values{"username": {"alice"}, "notes": {"hi"}}), 1024, t.TempDir())
+	state, err := Ensure(formRequest(url.Values{"username": {"alice"}, "notes": {"hi"}}), Limits{MaxPartSize: 1024, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestEnsureBuffersMultipartParts(t *testing.T) {
 		},
 	)
 
-	state, err := Ensure(req, 1024, tempDir)
+	state, err := Ensure(req, Limits{MaxPartSize: 1024, TempDir: tempDir})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -144,12 +144,12 @@ func TestEnsureBuffersMultipartParts(t *testing.T) {
 func TestEnsureReturnsExistingState(t *testing.T) {
 	req := multipartRequest(t, map[string]string{"username": "alice"}, nil)
 
-	first, err := Ensure(req, 1024, t.TempDir())
+	first, err := Ensure(req, Limits{MaxPartSize: 1024, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 
-	second, err := Ensure(req, 1024, t.TempDir())
+	second, err := Ensure(req, Limits{MaxPartSize: 1024, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure (second): %v", err)
 	}
@@ -166,7 +166,7 @@ func TestEnsureRejectsOversizePart(t *testing.T) {
 		{field: "photo", name: "big.bin", contentType: "application/octet-stream", content: bytes.Repeat([]byte("x"), 64)},
 	})
 
-	state, err := Ensure(req, 8, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 8, TempDir: t.TempDir()})
 	if err == nil {
 		state.Cleanup()
 		t.Fatal("Ensure succeeded, want ErrTooLarge")
@@ -186,7 +186,7 @@ func TestEnsureSanitizesUnsniffablePart(t *testing.T) {
 		{field: "blob", name: "unknown", contentType: "", content: []byte{0x00, 0x01, 0x02}},
 	})
 
-	state, err := Ensure(req, 1024, t.TempDir())
+	state, err := Ensure(req, Limits{MaxPartSize: 1024, TempDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestEnsureAttachesFormToRequest(t *testing.T) {
 	req := multipartRequest(t, map[string]string{"username": "alice", "notes": "hi"}, nil)
 	req.URL.RawQuery = "username=query&topic=uploads"
 
-	if _, err := Ensure(req, 1024, t.TempDir()); err != nil {
+	if _, err := Ensure(req, Limits{MaxPartSize: 1024, TempDir: t.TempDir()}); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 

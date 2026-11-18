@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/frinknet/caddy-savefile/pkg/config"
 	"github.com/frinknet/caddy-savefile/pkg/formbody"
+	"github.com/frinknet/caddy-savefile/pkg/paths"
 )
 
 type nextHandler struct {
@@ -123,14 +126,27 @@ func TestFormDataProvisionUsesGlobalConfig(t *testing.T) {
 	original := config.Global()
 	t.Cleanup(func() { config.Store(original) })
 
-	config.Store(config.Config{RootDir: "/global/root", MaxSize: 2048, TempDir: "/global/tmp"})
+	tempDir := filepath.Join(t.TempDir(), "scratch")
+	config.Store(config.Config{
+		RootDir:    t.TempDir(),
+		MaxSize:    2048,
+		MaxParts:   5,
+		TempDir:    tempDir,
+		VerifyMime: paths.VerifyMimeOff,
+	})
 
 	handler := new(FormData)
 	if err := handler.Provision(caddy.Context{}); err != nil {
 		t.Fatal(err)
 	}
-	if handler.MaxMemory != 2048 || handler.TempDir != "/global/tmp" {
+	if handler.MaxMemory != 2048 || handler.TempDir != tempDir {
 		t.Errorf("provisioned = %+v", handler)
+	}
+	if handler.MaxParts != 5 || handler.VerifyMime != paths.VerifyMimeOff {
+		t.Errorf("provisioned = %+v", handler)
+	}
+	if info, err := os.Stat(tempDir); err != nil || !info.IsDir() {
+		t.Errorf("provisioning did not create temp_dir: %v", err)
 	}
 }
 

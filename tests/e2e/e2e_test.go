@@ -25,9 +25,20 @@ import (
 	_ "github.com/frinknet/caddy-savefile"
 )
 
-const listenAddr = "127.0.0.1:18080"
+func freeAddr(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("finding a free port: %v", err)
+	}
+	defer listener.Close()
+
+	return listener.Addr().String()
+}
 
 func TestUploadRoundTrip(t *testing.T) {
+	listenAddr := freeAddr(t)
 	root := t.TempDir()
 	site := t.TempDir()
 	temp := t.TempDir()
@@ -132,13 +143,13 @@ http://%s {
 		t.Errorf("temp_dir was not cleaned up: %v", entries)
 	}
 
-	postRawBody(t, client)
+	postRawBody(t, client, listenAddr)
 	assertRawBodyUpload(t, filepath.Join(root, "images"))
 }
 
 // postRawBody sends a single file as a plain request body, with no multipart
 // envelope, and expects it to be routed by MIME type.
-func postRawBody(t *testing.T, client *http.Client) {
+func postRawBody(t *testing.T, client *http.Client, listenAddr string) {
 	t.Helper()
 
 	request, err := http.NewRequest(http.MethodPost, "http://"+listenAddr+"/upload",

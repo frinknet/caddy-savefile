@@ -14,7 +14,7 @@ import (
 )
 
 func (st *FormState) consumeMultipart(r *http.Request) error {
-	if err := paths.EnsureDir(st.tempDir); err != nil {
+	if err := paths.EnsureDir(st.limits.TempDir, 0o700); err != nil {
 		return caddyhttp.Error(http.StatusInternalServerError, fmt.Errorf("creating temp_dir: %w", err))
 	}
 
@@ -23,6 +23,7 @@ func (st *FormState) consumeMultipart(r *http.Request) error {
 		return caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("reading multipart body: %w", err))
 	}
 
+	parts := 0
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -30,6 +31,12 @@ func (st *FormState) consumeMultipart(r *http.Request) error {
 		}
 		if err != nil {
 			return caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("reading multipart part: %w", err))
+		}
+
+		parts++
+		if parts > st.limits.MaxParts {
+			part.Close()
+			return errTooLarge(st.limits)
 		}
 
 		err = st.consumePart(part)
@@ -49,11 +56,11 @@ func (st *FormState) consumePart(part *multipart.Part) error {
 }
 
 func (st *FormState) consumeValue(part *multipart.Part, name string) error {
-	value, err := io.ReadAll(io.LimitReader(part, st.maxSize+1))
+	value, err := io.ReadAll(io.LimitReader(part, st.limits.MaxPartSize+1))
 	if err != nil {
 		return caddyhttp.Error(http.StatusBadRequest, err)
 	}
-	if int64(len(value)) > st.maxSize {
+	if int64(len(value)) > st.limits.MaxPartSize {
 		return caddyhttp.Error(http.StatusRequestEntityTooLarge, paths.ErrTooLarge)
 	}
 
@@ -62,14 +69,14 @@ func (st *FormState) consumeValue(part *multipart.Part, name string) error {
 }
 
 func (st *FormState) consumeFile(part *multipart.Part, name string) error {
-	temp, err := os.CreateTemp(st.tempDir, "caddy-savefile-*")
+	temp, err := os.CreateTemp(st.limits.TempDir, "caddy-savefile-*")
 	if err != nil {
 		return caddyhttp.Error(http.StatusInternalServerError, err)
 	}
 	tempPath := temp.Name()
 	st.tempPaths = append(st.tempPaths, tempPath)
 
-	size, err := paths.CopyLimited(temp, part, st.maxSize)
+	size, err := paths.CopyLimited(temp, part, st.limits.MaxPartSize)
 	closeErr := temp.Close()
 	if err != nil {
 		if errors.Is(err, paths.ErrTooLarge) {
@@ -81,17 +88,22 @@ func (st *FormState) consumeFile(part *multipart.Part, name string) error {
 		return caddyhttp.Error(http.StatusInternalServerError, closeErr)
 	}
 
-	mimeType := paths.NormalizeMime(part.Header.Get("Content-Type"))
-	if mimeType == "" {
-		mimeType = paths.SniffMimePath(tempPath)
+	declaredType, detectedType, routingType, err := st.classifyPart(
+		part.Header.Get("Content-Type"),
+		func() string { return paths.SniffMimePath(tempPath) },
+	)
+	if err != nil {
+		return err
 	}
 
 	st.Parts = append(st.Parts, &Part{
-		FieldName: name,
-		Filename:  part.FileName(),
-		MimeType:  mimeType,
-		Size:      size,
-		TempPath:  tempPath,
+		FieldName:        name,
+		Filename:         part.FileName(),
+		Size:             size,
+		MimeType:         routingType,
+		DeclaredMimeType: declaredType,
+		DetectedMimeType: detectedType,
+		TempPath:         tempPath,
 	})
 	return nil
 }

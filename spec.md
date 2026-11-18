@@ -1,5 +1,10 @@
 # `caddy-savefile` Technical Specification
 
+> **Status:** original design document, kept for reference. Where it and the
+> implementation disagree, the code is right; the differences are listed under
+> "Known deviations from `spec.md`" in `AGENTS.md`, and `README.md` documents
+> current behaviour.
+
 **Module IDs:**
 
 * `http.handlers.savefile` (HTTP handler & Caddyfile directive for streaming multipart/form uploads)

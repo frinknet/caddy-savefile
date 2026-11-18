@@ -10,6 +10,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"go.uber.org/zap"
 
 	"github.com/frinknet/caddy-savefile/pkg/config"
 	"github.com/frinknet/caddy-savefile/pkg/formbody"
@@ -43,6 +44,14 @@ type SaveFile struct {
 
 	// MaxSize is the largest accepted file part, in bytes.
 	MaxSize int64 `json:"max_size,omitempty"`
+
+	logger *zap.Logger
+
+	// MaxParts caps the number of parts in one multipart body.
+	MaxParts int `json:"max_parts,omitempty"`
+
+	// VerifyMime controls how a declared MIME type is treated.
+	VerifyMime string `json:"verify_mime,omitempty"`
 }
 
 // CaddyModule returns the Caddy module information.
@@ -54,7 +63,8 @@ func (SaveFile) CaddyModule() caddy.ModuleInfo {
 }
 
 // Provision fills unset fields from the global savefile options.
-func (sf *SaveFile) Provision(caddy.Context) error {
+func (sf *SaveFile) Provision(ctx caddy.Context) error {
+	sf.logger = ctx.Logger()
 	global := config.Global()
 	if sf.RootDir == "" {
 		sf.RootDir = global.RootDir
@@ -64,6 +74,21 @@ func (sf *SaveFile) Provision(caddy.Context) error {
 	}
 	if sf.MaxSize <= 0 {
 		sf.MaxSize = global.MaxSize
+	}
+	if sf.MaxParts <= 0 {
+		sf.MaxParts = global.MaxParts
+	}
+	if sf.VerifyMime == "" {
+		sf.VerifyMime = global.VerifyMime
+	}
+
+	// Fail at config load rather than 500ing on every upload: a missing mount or
+	// a read-only filesystem shows up here, where the operator will see it.
+	if err := paths.ProbeWritable(sf.RootDir, 0o755); err != nil {
+		return fmt.Errorf("savefile: root_dir %q is unusable: %w", sf.RootDir, err)
+	}
+	if err := paths.ProbeWritable(sf.TempDir, 0o700); err != nil {
+		return fmt.Errorf("savefile: temp_dir %q is unusable: %w", sf.TempDir, err)
 	}
 	return nil
 }
@@ -87,16 +112,43 @@ func (sf SaveFile) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		return next.ServeHTTP(w, r)
 	}
 
-	state, err := formbody.Ensure(r, sf.MaxSize, sf.TempDir)
+	state, err := formbody.Ensure(r, formbody.Limits{
+		MaxPartSize: sf.MaxSize,
+		MaxParts:    sf.MaxParts,
+		TempDir:     sf.TempDir,
+		VerifyMime:  sf.VerifyMime,
+	})
 	if err != nil {
 		return err
 	}
+	defer state.Cleanup()
 	if err := state.IngestRawBody(r); err != nil {
 		return err
 	}
 
 	for _, part := range state.Parts {
-		if part.Saved || !paths.MimeMatches(sf.MimeFilter, part.MimeType) {
+		if part.Saved {
+			continue
+		}
+
+		// A declaration that lost to the content is worth saying out loud, whether
+		// or not one of the rules ends up matching it.
+		if part.DeclaredMimeType != "" && part.DeclaredMimeType != part.MimeType {
+			sf.log().Warn("routing a part by its content, not its declaration",
+				zap.String("filename", part.Filename),
+				zap.String("declared_mime", part.DeclaredMimeType),
+				zap.String("detected_mime", part.DetectedMimeType),
+			)
+		}
+
+		if !paths.MimeMatches(sf.MimeFilter, part.MimeType) {
+			sf.log().Debug("discarded part",
+				zap.String("field", part.FieldName),
+				zap.String("filename", part.Filename),
+				zap.String("declared_mime", part.DeclaredMimeType),
+				zap.String("detected_mime", part.DetectedMimeType),
+				zap.String("filter", sf.MimeFilter),
+			)
 			continue
 		}
 
@@ -107,9 +159,27 @@ func (sf SaveFile) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 
 		part.Saved = true
 		state.Files = append(state.Files, info)
+
+		sf.log().Debug("saved part",
+			zap.String("field", info.FieldName),
+			zap.String("filename", info.OriginalFilename),
+			zap.String("path", info.SavedPath),
+			zap.Int64("bytes", info.Filesize),
+			zap.String("mime", info.MimeType),
+			zap.String("declared_mime", info.DeclaredMimeType),
+		)
 	}
 
 	return next.ServeHTTP(w, r)
+}
+
+// log returns the provisioned logger, or a no-op one when Provision has not run
+// (as in unit tests).
+func (sf SaveFile) log() *zap.Logger {
+	if sf.logger == nil {
+		return zap.NewNop()
+	}
+	return sf.logger
 }
 
 func (sf SaveFile) savePart(r *http.Request, part *formbody.Part) (formbody.SavedFileInfo, error) {
@@ -133,12 +203,20 @@ func (sf SaveFile) savePart(r *http.Request, part *formbody.Part) (formbody.Save
 		size = info.Size()
 	}
 
+	// Record what the bytes are, not what the client claimed, and keep the
+	// declaration alongside it.
+	detected := part.DetectedMimeType
+	if detected == "" {
+		detected = part.MimeType
+	}
+
 	return formbody.SavedFileInfo{
 		FieldName:        part.FieldName,
 		OriginalFilename: filename,
 		SavedPath:        destination,
 		Filesize:         size,
-		MimeType:         part.MimeType,
+		MimeType:         detected,
+		DeclaredMimeType: part.DeclaredMimeType,
 	}, nil
 }
 

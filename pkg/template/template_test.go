@@ -187,14 +187,21 @@ func TestProvisionUsesGlobalConfig(t *testing.T) {
 	original := config.Global()
 	t.Cleanup(func() { config.Store(original) })
 
-	config.Store(config.Config{RootDir: "/global/root", MaxSize: 512, TempDir: "/global/tmp"})
+	rootDir := filepath.Join(t.TempDir(), "uploads")
+	tempDir := filepath.Join(t.TempDir(), "scratch")
+	config.Store(config.Config{RootDir: rootDir, MaxSize: 512, TempDir: tempDir, VerifyMime: paths.VerifyMimeOn})
 
 	function := new(SaveFileFunc)
 	if err := function.Provision(caddy.Context{}); err != nil {
 		t.Fatal(err)
 	}
-	if function.RootDir != "/global/root" || function.MaxSize != 512 || function.TempDir != "/global/tmp" {
+	if function.RootDir != rootDir || function.MaxSize != 512 || function.TempDir != tempDir {
 		t.Errorf("provisioned = %+v", function)
+	}
+	for _, dir := range []string{rootDir, tempDir} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Errorf("provisioning did not create %s: %v", dir, err)
+		}
 	}
 }
 

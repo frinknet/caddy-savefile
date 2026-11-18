@@ -42,18 +42,21 @@ func (st *FormState) IngestRawBody(r *http.Request) error {
 	if st.consumed || r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
 		return nil
 	}
-	if err := paths.EnsureDir(st.tempDir); err != nil {
+	if r.ContentLength > st.limits.MaxPartSize {
+		return caddyhttp.Error(http.StatusRequestEntityTooLarge, paths.ErrTooLarge)
+	}
+	if err := paths.EnsureDir(st.limits.TempDir, 0o700); err != nil {
 		return caddyhttp.Error(http.StatusInternalServerError, fmt.Errorf("creating temp_dir: %w", err))
 	}
 
-	temp, err := os.CreateTemp(st.tempDir, "caddy-savefile-*")
+	temp, err := os.CreateTemp(st.limits.TempDir, "caddy-savefile-*")
 	if err != nil {
 		return caddyhttp.Error(http.StatusInternalServerError, err)
 	}
 	tempPath := temp.Name()
 	st.tempPaths = append(st.tempPaths, tempPath)
 
-	size, err := paths.CopyLimited(temp, r.Body, st.maxSize)
+	size, err := paths.CopyLimited(temp, r.Body, st.limits.MaxPartSize)
 	closeErr := temp.Close()
 	if err != nil {
 		os.Remove(tempPath)
@@ -67,18 +70,24 @@ func (st *FormState) IngestRawBody(r *http.Request) error {
 		return caddyhttp.Error(http.StatusInternalServerError, closeErr)
 	}
 
-	mimeType := paths.NormalizeMime(r.Header.Get("Content-Type"))
-	if mimeType == "" || mimeType == "application/octet-stream" {
-		mimeType = paths.SniffMimePath(tempPath)
+	declaredType, detectedType, routingType, err := st.classifyPart(
+		r.Header.Get("Content-Type"),
+		func() string { return paths.SniffMimePath(tempPath) },
+	)
+	if err != nil {
+		os.Remove(tempPath)
+		return err
 	}
 
 	st.consumed = true
 	st.Parts = append(st.Parts, &Part{
-		FieldName: "body",
-		Filename:  rawFilename(r, mimeType),
-		MimeType:  mimeType,
-		Size:      size,
-		TempPath:  tempPath,
+		FieldName:        "body",
+		Filename:         rawFilename(r, routingType),
+		Size:             size,
+		MimeType:         routingType,
+		DeclaredMimeType: declaredType,
+		DetectedMimeType: detectedType,
+		TempPath:         tempPath,
 	})
 
 	return nil

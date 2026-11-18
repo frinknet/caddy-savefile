@@ -1,6 +1,12 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+
+	"github.com/frinknet/caddy-savefile/pkg/paths"
+)
 
 func TestParseSize(t *testing.T) {
 	tests := []struct {
@@ -37,6 +43,29 @@ func TestParseSize(t *testing.T) {
 		if got != test.want {
 			t.Errorf("ParseSize(%q) = %d, want %d", test.in, got, test.want)
 		}
+	}
+}
+
+func TestParseGlobalOptionVerifyMime(t *testing.T) {
+	original := Global()
+	t.Cleanup(func() { Store(original) })
+
+	d := caddyfile.NewTestDispenser("savefile {\n\tverify_mime strict\n\tmax_parts 7\n}")
+	if _, err := parseGlobalOption(d, nil); err != nil {
+		t.Fatalf("parseGlobalOption: %v", err)
+	}
+
+	got := Global()
+	if got.VerifyMime != paths.VerifyMimeStrict {
+		t.Errorf("VerifyMime = %q, want strict", got.VerifyMime)
+	}
+	if got.MaxParts != 7 {
+		t.Errorf("MaxParts = %d, want 7", got.MaxParts)
+	}
+
+	bad := caddyfile.NewTestDispenser("savefile {\n\tverify_mime sometimes\n}")
+	if _, err := parseGlobalOption(bad, nil); err == nil {
+		t.Error("an unknown verify_mime value was accepted")
 	}
 }
 

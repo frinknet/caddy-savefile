@@ -22,6 +22,7 @@ import (
 	"github.com/frinknet/caddy-savefile/pkg/config"
 	"github.com/frinknet/caddy-savefile/pkg/formbody"
 	"github.com/frinknet/caddy-savefile/pkg/formdata"
+	"github.com/frinknet/caddy-savefile/pkg/paths"
 )
 
 type uploadFile struct {
@@ -29,6 +30,25 @@ type uploadFile struct {
 	name        string
 	contentType string
 	content     []byte
+}
+
+// chain drives middleware handlers the way Caddy does: nested, so every handler
+// unwinds after the handlers below it have finished.
+type chain struct {
+	handlers []caddyhttp.MiddlewareHandler
+	last     caddyhttp.Handler
+}
+
+func (c *chain) ServeHTTP(w http.ResponseWriter, r *http.Request) error {
+	if len(c.handlers) == 0 {
+		return c.last.ServeHTTP(w, r)
+	}
+	return c.handlers[0].ServeHTTP(w, r, &chain{handlers: c.handlers[1:], last: c.last})
+}
+
+func runChain(handlers ...caddyhttp.MiddlewareHandler) (*chain, *nextHandler) {
+	next := &nextHandler{}
+	return &chain{handlers: handlers, last: next}, next
 }
 
 type nextHandler struct {
@@ -104,12 +124,9 @@ func TestSaveFileRoutesMatchedParts(t *testing.T) {
 		},
 	)
 
-	var next nextHandler
-	if err := form.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatalf("formdata: %v", err)
-	}
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatalf("savefile: %v", err)
+	head, next := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("chain: %v", err)
 	}
 	if !next.called {
 		t.Error("savefile did not call the next handler")
@@ -166,14 +183,8 @@ func TestSaveFileKeepsFileAndFormSeparateAcrossRules(t *testing.T) {
 		{field: "clip", name: "clip.mp4", contentType: "video/mp4", content: []byte("mp4")},
 	})
 
-	var next nextHandler
-	if err := form.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatal(err)
-	}
-	if err := images.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatal(err)
-	}
-	if err := documents.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, _ := runChain(form, images, documents)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -207,11 +218,8 @@ func TestSaveFileSanitizesClientFilename(t *testing.T) {
 		{field: "file", name: "../../../../etc/passwd", contentType: "text/plain", content: []byte("nope")},
 	})
 
-	var next nextHandler
-	if err := form.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatal(err)
-	}
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,11 +245,8 @@ func TestSaveFilePayloadTooLarge(t *testing.T) {
 		{field: "file", name: "big.bin", contentType: "application/octet-stream", content: bytes.Repeat([]byte("x"), 64)},
 	})
 
-	var next nextHandler
-	err := form.ServeHTTP(httptest.NewRecorder(), req, &next)
-	if err == nil {
-		err = handler.ServeHTTP(httptest.NewRecorder(), req, &next)
-	}
+	head, _ := runChain(form, handler)
+	err := head.ServeHTTP(httptest.NewRecorder(), req)
 	if err == nil {
 		t.Fatal("oversize upload succeeded")
 	}
@@ -265,8 +270,8 @@ func TestSaveFileIgnoresNonUploadMethods(t *testing.T) {
 	_, handler := newHandler(root, "*", "files/{filename}", config.DefaultMaxSize)
 
 	req := httptest.NewRequest(http.MethodGet, "/upload", nil)
-	var next nextHandler
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, next := runChain(handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatal(err)
 	}
 	if !next.called {
@@ -290,22 +295,62 @@ func TestProvisionUsesGlobalConfig(t *testing.T) {
 	original := config.Global()
 	t.Cleanup(func() { config.Store(original) })
 
-	config.Store(config.Config{RootDir: "/global/root", MaxSize: 4242, TempDir: "/global/tmp"})
+	rootDir := filepath.Join(t.TempDir(), "uploads")
+	tempDir := filepath.Join(t.TempDir(), "scratch")
+	config.Store(config.Config{
+		RootDir:    rootDir,
+		MaxSize:    4242,
+		MaxParts:   9,
+		TempDir:    tempDir,
+		VerifyMime: paths.VerifyMimeStrict,
+	})
 
 	handler := new(SaveFile)
 	if err := handler.Provision(caddy.Context{}); err != nil {
 		t.Fatal(err)
 	}
-	if handler.RootDir != "/global/root" || handler.MaxSize != 4242 || handler.TempDir != "/global/tmp" {
+	if handler.RootDir != rootDir || handler.MaxSize != 4242 || handler.TempDir != tempDir {
 		t.Errorf("provisioned = %+v", handler)
 	}
+	if handler.MaxParts != 9 {
+		t.Errorf("MaxParts = %d, want 9", handler.MaxParts)
+	}
+	if handler.VerifyMime != paths.VerifyMimeStrict {
+		t.Errorf("VerifyMime = %q, want strict", handler.VerifyMime)
+	}
 
-	explicit := &SaveFile{RootDir: "/explicit", MaxSize: 1, TempDir: "/explicit/tmp"}
+	for _, dir := range []string{rootDir, tempDir} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Errorf("provisioning did not create %s: %v", dir, err)
+		}
+	}
+	if entries, err := os.ReadDir(rootDir); err != nil || len(entries) != 0 {
+		t.Errorf("probe left files behind in %s: %v", rootDir, entries)
+	}
+
+	explicit := &SaveFile{RootDir: t.TempDir(), MaxSize: 1, TempDir: t.TempDir(), MimeFilter: "*", Destination: "x"}
 	if err := explicit.Provision(caddy.Context{}); err != nil {
 		t.Fatal(err)
 	}
-	if explicit.RootDir != "/explicit" || explicit.MaxSize != 1 || explicit.TempDir != "/explicit/tmp" {
-		t.Errorf("explicit config overwritten: %+v", explicit)
+	if explicit.MaxSize != 1 {
+		t.Errorf("explicit MaxSize overwritten: %+v", explicit)
+	}
+}
+
+func TestProvisionRejectsUnusableRootDir(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &SaveFile{
+		RootDir:     filepath.Join(blocker, "uploads"),
+		TempDir:     t.TempDir(),
+		MimeFilter:  "*",
+		Destination: "x/{filename}",
+	}
+	if err := handler.Provision(caddy.Context{}); err == nil {
+		t.Error("provisioning accepted a root_dir it cannot create")
 	}
 }
 
@@ -339,11 +384,8 @@ func TestSaveFileClaimsCanonicalizedUUIDShorthand(t *testing.T) {
 		{field: "file", name: "note.txt", contentType: "text/plain", content: []byte("x")},
 	})
 
-	var next nextHandler
-	if err := form.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatal(err)
-	}
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -370,11 +412,8 @@ func TestSaveFileGivesEachPartItsOwnName(t *testing.T) {
 		{field: "second", name: "same.txt", contentType: "text/plain", content: []byte("two")},
 	})
 
-	var next nextHandler
-	if err := form.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatal(err)
-	}
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -406,8 +445,8 @@ func TestSaveFileIngestsRawBody(t *testing.T) {
 
 	req := rawRequest(t, "/upload", "image/png", "raw-png-bytes")
 
-	var next nextHandler
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, next := runChain(handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatalf("savefile: %v", err)
 	}
 	if !next.called {
@@ -440,8 +479,8 @@ func TestSaveFileDiscardsUnmatchedRawBody(t *testing.T) {
 
 	req := rawRequest(t, "/upload", "image/png", "raw-png-bytes")
 
-	var next nextHandler
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, _ := runChain(handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatalf("savefile: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "docs")); !os.IsNotExist(err) {
@@ -455,11 +494,8 @@ func TestSaveFileLeavesJSONToFormdata(t *testing.T) {
 
 	req := rawRequest(t, "/upload", "application/json", `{"username":"erin"}`)
 
-	var next nextHandler
-	if err := form.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
-		t.Fatal(err)
-	}
-	if err := handler.ServeHTTP(httptest.NewRecorder(), req, &next); err != nil {
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -468,6 +504,70 @@ func TestSaveFileLeavesJSONToFormdata(t *testing.T) {
 	}
 	if got := req.Form.Get("username"); got != "erin" {
 		t.Errorf("Form.username = %q", got)
+	}
+}
+
+func TestSaveFileSurvivesClientDisconnect(t *testing.T) {
+	root := t.TempDir()
+	form, handler := newHandler(root, "image/*", "images/{filename}", config.DefaultMaxSize)
+
+	req := multipartRequest(t, nil, []uploadFile{
+		{field: "photo", name: "photo.png", contentType: "image/png", content: []byte("png-bytes")},
+	})
+
+	// A client that closes the connection while the upload is still being
+	// routed cancels the request context. The upload must still land.
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	cancel()
+
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("chain after disconnect: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "images", "photo.png")); err != nil {
+		t.Errorf("upload was lost when the client disconnected: %v", err)
+	}
+}
+
+func TestSaveFileRefusesActiveContentUnderAnImageRule(t *testing.T) {
+	root := t.TempDir()
+	form, handler := newHandler(root, "image/*", "images/{filename}", config.DefaultMaxSize)
+
+	req := multipartRequest(t, nil, []uploadFile{
+		{field: "page", name: "page.png", contentType: "image/png",
+			content: []byte("<!DOCTYPE html><html><body>not an image</body></html>")},
+	})
+
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "images")); !os.IsNotExist(err) {
+		t.Error("a page claiming image/png was written under an image/* rule")
+	}
+}
+
+func TestSaveFileStrictVerificationRejectsMismatch(t *testing.T) {
+	root := t.TempDir()
+	form, handler := newHandler(root, "image/*", "images/{filename}", config.DefaultMaxSize)
+	form.VerifyMime = paths.VerifyMimeStrict
+	handler.VerifyMime = paths.VerifyMimeStrict
+
+	req := multipartRequest(t, nil, []uploadFile{
+		{field: "page", name: "page.png", contentType: "image/png",
+			content: []byte("<!DOCTYPE html><html><body>not an image</body></html>")},
+	})
+
+	head, _ := runChain(form, handler)
+	err := head.ServeHTTP(httptest.NewRecorder(), req)
+	if err == nil {
+		t.Fatal("strict verification accepted a mismatch")
+	}
+	if status, ok := handlerErrorStatus(err); !ok || status != http.StatusUnsupportedMediaType {
+		t.Errorf("error = %v, want 415", err)
 	}
 }
 
