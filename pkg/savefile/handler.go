@@ -1,3 +1,7 @@
+// Package savefile implements the `savefile` directive, which routes uploaded
+// file parts to their destination by MIME type inside a confined root
+// directory. Only POST, PUT and PATCH are handled; every other method passes
+// through untouched.
 package savefile
 
 import (

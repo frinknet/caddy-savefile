@@ -1,3 +1,7 @@
+// Package formdata implements the `formdata` directive, which reads a request
+// body once and publishes the submitted fields for templates, including a JSON
+// body folded into dotted field names. Only POST, PUT and PATCH are handled;
+// every other method passes through untouched.
 package formdata
 
 import (
