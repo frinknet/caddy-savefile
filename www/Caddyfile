@@ -1,0 +1,29 @@
+{
+	savefile {
+		root_dir /srv/www/uploads
+		max_size 10MB
+		temp_dir /tmp
+	}
+}
+
+:80 {
+	root * /srv/www
+	encode gzip
+
+	handle /upload* {
+		formdata
+
+		savefile image/* /srv/www/uploads/images/{uuid}_{filename}
+		savefile application/pdf /srv/www/uploads/docs/{uuid}_{filename}
+
+		respond "{{include \"/process.html\"}}" 200
+
+		templates {
+			extensions {
+				savefile
+			}
+		}
+	}
+
+	file_server
+}

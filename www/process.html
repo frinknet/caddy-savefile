@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><title>Submission Processed</title></head>
+<body>
+	{{$user := .Req.Form.Get "username"}}
+	{{$notes := .Req.Form.Get "notes"}}
+
+	<h1>Submission received from {{$user}}</h1>
+
+	{{$receipt := savefile (printf "receipts/%s-notes.txt" $user) $notes}}
+	<p>Saved form notes to: <code>{{$receipt}}</code></p>
+
+	<p>Form fields are also available as <code>{{"{{"}}placeholder "http.vars.form.username"{{"}}"}}</code>.</p>
+
+	<p><a href="/">Upload another</a></p>
+</body>
+</html>
