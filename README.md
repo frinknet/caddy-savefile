@@ -693,22 +693,27 @@ is what the handler records internally.
 ## Build and test
 
 ```sh
-timeout 600 ./build.sh         # scratch image, tagged caddy-savefile:test
-timeout 180 tests/e2e/run.sh   # starts that image and checks it over HTTP
+timeout 600 ./build.sh    # scratch image, tagged caddy-savefile:test
+timeout 280 test/unit.sh  # gofmt, vet and the Go tests in the builder image
+timeout 180 test/e2e.sh   # boots the built image and checks it over HTTP
 ```
 
-`tests/e2e/run.sh` mounts `tests/e2e/config` read-only, so it uses its own
-Caddyfile and pages rather than the demo config in `www/`. It drives the
-container from the inside with `nc` and toybox `wget` and asserts what lands on
-disk under `root_dir`.
+`test/e2e.sh` writes a temporary Caddyfile, the pages it needs and its upload
+fixtures under `/tmp`, mounts that tree at `/data`, and drives the running image
+from the host with `curl`. It covers the `formdata` directive, every rule type,
+the raw-body and JSON paths, the template action, the three `verify_mime` modes,
+the size and part limits, method passthrough, the debug log and startup
+validation. It asserts what lands on disk under `root_dir` and never builds an
+image of its own.
 
-There is a second, in-process layer: `tests/e2e/e2e_test.go` loads a real config
-on a free port and uploads through it. The whole suite, from the builder image:
+There is a second, in-process layer: `test/e2e/e2e_test.go` loads a real config
+on a free port and uploads through it. `test/unit.sh` runs it with the package
+tests:
 
 ```sh
 timeout 280 docker run --rm -v caddy-sf-mod:/mod -v "$PWD:/src" -w /src \
   -e GOMODCACHE=/mod -e GOCACHE=/mod/gocache caddy:2.11.9-builder-alpine \
-  sh -c 'gofmt -w savefile.go pkg tests && go vet ./... && go test ./... -count=1 -timeout 120s'
+  sh -c 'gofmt -l . && go vet ./... && go test ./... -count=1 -timeout 120s'
 ```
 
 Go tooling runs in that builder image only, never on the host. The sanitizer is
@@ -730,7 +735,7 @@ pkg/formbody    one-read form state shared by both directives
 pkg/formdata    the formdata directive
 pkg/savefile    the savefile directive
 pkg/template    the templates action
-tests/e2e       in-process config test and the in-image harness
+test            unit.sh, e2e.sh and the in-process config test
 www             example Caddyfile, form page, result page
 ```
 
