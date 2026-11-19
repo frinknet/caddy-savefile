@@ -14,8 +14,10 @@ What it guarantees:
 - **A declared MIME type is not trusted blindly.** Active content such as HTML or
   SVG cannot be smuggled under an `image/*` rule.
 - **Resource use is bounded.** Every part is capped by `max_size`, the number of
-  parts by `max_parts`, and a body that declares a larger `Content-Length` is
-  refused before it is read.
+  parts by `max_parts`, and a body that declares a `Content-Length` larger than
+  `max_size × max_parts` is refused before it is read.
+
+Known gaps are tracked in `BACKLOG.md`; `spec.md` is the technical specification.
 
 ## Modules
 
@@ -33,8 +35,8 @@ xcaddy build --with github.com/frinknet/caddy-savefile
 ```
 
 The repo also builds a scratch image, tagged `caddy-savefile:test`, with
-`./build.sh`. That image ships `www/` as its `/etc/caddy/Caddyfile`, so it boots
-into the example below.
+`./build.sh`. That image ships `www/` at `/srv/www` and starts there, so
+`caddy run` finds the bundled `Caddyfile` and boots into the example below.
 
 ## Quick start
 
@@ -70,8 +72,8 @@ example.com {
 }
 ```
 
-`www/` holds this configuration plus `index.html` (the form) and `process.html`
-(the result page).
+`www/` holds a runnable variant of this configuration (absolute destinations
+and `:80`) plus `index.html` (the form) and `process.html` (the result page).
 
 A POST to `/upload` therefore parses the form fields, stores each `image/*` part
 under `images/` and each `application/pdf` part under `docs/`, discards every
@@ -105,9 +107,9 @@ Sizes accept binary suffixes (`512KB`, `50MB`, `1GB`) or a bare byte count.
 a whole JSON body, and a template write. `formdata` calls the same number
 `max_memory` when it is set on the handler instead of in the global block.
 
-Both directories are created and write-probed when the config loads, so a typo or
-a read-only mount fails `caddy validate` and reload rather than returning `500`
-on every upload.
+The handlers create and write-probe both directories when the config loads, so a
+typo or a read-only mount fails `caddy validate` and reload rather than returning
+`500` on every upload.
 
 These options are Caddyfile-only. A JSON config has no global block, so set the
 per-module fields instead (`root_dir`, `temp_dir`, `max_size`, `max_parts`,
@@ -154,6 +156,20 @@ resolves inside `root_dir`. It supports:
 Caddy's Caddyfile adapter rewrites the `{uuid}` shorthand into
 `{http.request.uuid}` before the directive sees it. The handler claims that form
 back, so `{uuid}` always means a per-part UUID and not a per-request one.
+
+Each write publishes the saved file for the handlers below it, in particular
+`templates`:
+
+```html
+{{placeholder "http.vars.savefile.filename"}}
+{{placeholder "http.vars.savefile.saved_path"}}
+{{placeholder "http.vars.savefile.filesize"}}
+{{placeholder "http.vars.savefile.mimetype"}}
+```
+
+`saved_path` is relative to `root_dir`, the same value the `{{ savefile }}` action
+returns. A request that writes several files leaves the last one's metadata in
+place, because every placeholder is a single flat value.
 
 The equivalent JSON, for a JSON config:
 
@@ -675,20 +691,25 @@ so an upload is never lost to a client that closes the connection early.
 ## Logging
 
 With `debug` enabled in the global block, each save and each discarded part is
-logged with its filename, field, size and both MIME types. When a declaration
-loses to the content, that is logged at warn level, because it usually means a
-client is lying or a rule is misconfigured.
+logged with its filename, field and MIME types; a save also records its byte
+count and destination. When a declaration loses to the content, that is logged
+at warn level, because it usually means a client is lying or a rule is
+misconfigured.
 
 ## Placeholders
 
 | Placeholder | Description |
 | --- | --- |
 | `{http.vars.form.<key>}` | first submitted value for form field `<key>` |
+| `{http.vars.savefile.filename}` | sanitized client filename of the file saved most recently |
+| `{http.vars.savefile.saved_path}` | that file's destination, relative to `root_dir` |
+| `{http.vars.savefile.filesize}` | bytes written, as a decimal number |
+| `{http.vars.savefile.mimetype}` | the MIME type the bytes were detected as |
 
-Saved-file metadata is deliberately not published to the vars tree. The template
-action returns the path it wrote, and `SavedFileInfo` (with `field_name`,
-`original_filename`, `saved_path`, `filesize`, `mime_type`, `declared_mime_type`)
-is what the handler records internally.
+The vars table is flat, so a request that writes several files leaves the
+metadata of the last one written. The `{{ savefile }}` template action cannot
+publish these: Caddy's templates handler gives extension functions no request.
+The action returns the relative path it wrote instead.
 
 ## Build and test
 
@@ -746,5 +767,6 @@ container built from `caddy:2.11.9-builder-alpine`, with toybox providing the
 shell, so no libc or shell is inherited from a base image.
 
 `AGENTS.md` holds working notes for agents (kept out of git by `.gitignore`),
-`spec.md` is the technical specification and is kept in step with this document
-and the code, and `NOTICE` records licensing.
+`BACKLOG.md` lists the known gaps (also kept out of git), `spec.md` is the
+technical specification and is kept in step with this document and the code, and
+`NOTICE` records licensing.

@@ -3,6 +3,8 @@ package formbody
 import (
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strconv"
 
 	"github.com/caddyserver/caddy/v2"
 )
@@ -27,4 +29,19 @@ func PublishFields(r *http.Request, values url.Values) {
 		}
 		repl.Set("http.vars.form."+key, vals[0])
 	}
+}
+
+// PublishSavedFile exposes the file that was just written as
+// {http.vars.savefile.*} placeholders. The vars table is flat, so a request
+// that writes several files leaves the metadata of the last one in place.
+// relativePath is the destination relative to root_dir, not the path on disk.
+func PublishSavedFile(r *http.Request, info SavedFileInfo, relativePath string) {
+	repl := Replacer(r)
+	if repl == nil {
+		return
+	}
+	repl.Set("http.vars.savefile.filename", info.OriginalFilename)
+	repl.Set("http.vars.savefile.saved_path", filepath.ToSlash(relativePath))
+	repl.Set("http.vars.savefile.filesize", strconv.FormatInt(info.Filesize, 10))
+	repl.Set("http.vars.savefile.mimetype", info.MimeType)
 }

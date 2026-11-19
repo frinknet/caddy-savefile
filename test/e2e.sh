@@ -200,6 +200,13 @@ cityPlaceholder={{placeholder "http.vars.form.address.city"}}
 tags={{.Req.Form.Get "tags"}}
 HTML
 
+cat > "$TMP/www/vars.html" << 'HTML'
+filename={{placeholder "http.vars.savefile.filename"}}
+saved_path={{placeholder "http.vars.savefile.saved_path"}}
+filesize={{placeholder "http.vars.savefile.filesize"}}
+mimetype={{placeholder "http.vars.savefile.mimetype"}}
+HTML
+
 cat > "$TMP/tpl/ok.html" << 'HTML'
 {{$p := savefile "writes/ok.txt" "ok-content"}}written={{$p}}
 HTML
@@ -276,6 +283,13 @@ cat > "$TMP/Caddyfile" << 'CADDY'
 	handle /contact* {
 		formdata
 		respond "{{include \"/contact.html\"}}" 200
+		templates
+	}
+
+	# Saved-file metadata as placeholders.
+	handle /vars* {
+		savefile */* vars/{filename}
+		respond "{{include \"/vars.html\"}}" 200
 		templates
 	}
 
@@ -825,6 +839,18 @@ validate_fail "savefile with one argument fails" "$NEG/one-arg.Caddyfile" 'wrong
 validate_fail "savefile with three arguments fails" "$NEG/three-args.Caddyfile" 'wrong argument count'
 validate_fail "formdata with an argument fails" "$NEG/formdata-arg.Caddyfile" 'wrong argument count'
 validate_fail "the template extension with an argument fails" "$NEG/extension-arg.Caddyfile" 'wrong argument count'
+
+# ── Test 18: saved-file metadata as placeholders ──────────────────────────
+echo ""
+echo "=== Test 18: savefile placeholders ==="
+SIZE=$(wc -c < "$TMP/put.png" | tr -d ' ')
+request "$PORT" POST /vars -F "upload=@$TMP/put.png;filename=photo.png;type=image/png"
+check_eq "placeholder request status" "200" "$STATUS"
+body_has "filename placeholder" "filename=photo.png"
+body_has "saved_path placeholder" "saved_path=vars/photo.png"
+body_has "filesize placeholder" "filesize=$SIZE"
+body_has "mimetype placeholder" "mimetype=image/png"
+assert_entry_count "the placeholder request stored the file" "$TMP/uploads/vars" 1
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""

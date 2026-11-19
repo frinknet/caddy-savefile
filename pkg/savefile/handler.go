@@ -189,7 +189,7 @@ func (sf SaveFile) log() *zap.Logger {
 func (sf SaveFile) savePart(r *http.Request, part *formbody.Part) (formbody.SavedFileInfo, error) {
 	filename := paths.SanitizeFilename(part.Filename)
 
-	destination, _, err := paths.ResolveDestination(sf.RootDir, sf.expandDestination(r), paths.NewUUID(), filename)
+	destination, relative, err := paths.ResolveDestination(sf.RootDir, sf.expandDestination(r), paths.NewUUID(), filename)
 	if err != nil {
 		return formbody.SavedFileInfo{}, caddyhttp.Error(http.StatusBadRequest, err)
 	}
@@ -214,14 +214,18 @@ func (sf SaveFile) savePart(r *http.Request, part *formbody.Part) (formbody.Save
 		detected = part.MimeType
 	}
 
-	return formbody.SavedFileInfo{
+	info := formbody.SavedFileInfo{
 		FieldName:        part.FieldName,
 		OriginalFilename: filename,
 		SavedPath:        destination,
 		Filesize:         size,
 		MimeType:         detected,
 		DeclaredMimeType: part.DeclaredMimeType,
-	}, nil
+	}
+
+	formbody.PublishSavedFile(r, info, relative)
+
+	return info, nil
 }
 
 // expandDestination resolves the configured destination template, expanding any

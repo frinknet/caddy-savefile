@@ -119,7 +119,7 @@ func TestSaveFileRoutesMatchedParts(t *testing.T) {
 	req := multipartRequest(t,
 		map[string]string{"username": "alice"},
 		[]uploadFile{
-			{field: "photo", name: "photo.png", contentType: "image/png", content: []byte("png-bytes")},
+			{field: "photo", name: "photo.png", contentType: "image/png", content: []byte("\x89PNG\r\n\x1a\npng-bytes")},
 			{field: "doc", name: "doc.pdf", contentType: "application/pdf", content: []byte("pdf-bytes")},
 		},
 	)
@@ -150,12 +150,10 @@ func TestSaveFileRoutesMatchedParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "png-bytes" {
+	if string(content) != "\x89PNG\r\n\x1a\npng-bytes" {
 		t.Errorf("saved content = %q", content)
 	}
 
-	// Saved-file metadata deliberately stays out of the vars tree; form fields
-	// are the only thing published there.
 	if got := req.Form.Get("username"); got != "alice" {
 		t.Errorf("Form.username = %q", got)
 	}
@@ -167,8 +165,69 @@ func TestSaveFileRoutesMatchedParts(t *testing.T) {
 	if got := repl.ReplaceAll("{http.vars.form.username}", ""); got != "alice" {
 		t.Errorf("form placeholder = %q", got)
 	}
-	if got := repl.ReplaceAll("{http.vars.savefile.filename}", "unset"); got != "unset" {
-		t.Errorf("savefile placeholder = %q, want it absent", got)
+	if got := repl.ReplaceAll("{http.vars.savefile.filename}", ""); got != "photo.png" {
+		t.Errorf("savefile filename placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.saved_path}", ""); got != "images/"+entries[0].Name() {
+		t.Errorf("savefile saved_path placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.filesize}", ""); got != "17" {
+		t.Errorf("savefile filesize placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.mimetype}", ""); got != "image/png" {
+		t.Errorf("savefile mimetype placeholder = %q", got)
+	}
+}
+
+func TestSaveFilePublishesOnlyTheLastSavedFile(t *testing.T) {
+	root := t.TempDir()
+	form, handler := newHandler(root, "image/*", "images/{filename}", config.DefaultMaxSize)
+
+	req := multipartRequest(t, nil, []uploadFile{
+		{field: "first", name: "first.png", contentType: "image/png", content: []byte("first-png")},
+		{field: "second", name: "second.png", contentType: "image/png", content: []byte("second-png-bytes")},
+	})
+
+	head, _ := runChain(form, handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+
+	repl := req.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+	if got := repl.ReplaceAll("{http.vars.savefile.filename}", ""); got != "second.png" {
+		t.Errorf("filename placeholder = %q, want the last saved file", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.saved_path}", ""); got != "images/second.png" {
+		t.Errorf("saved_path placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.filesize}", ""); got != "16" {
+		t.Errorf("filesize placeholder = %q", got)
+	}
+}
+
+func TestSaveFilePublishesRawBodyMetadata(t *testing.T) {
+	root := t.TempDir()
+	_, handler := newHandler(root, "*", "raw/{filename}", config.DefaultMaxSize)
+
+	req := rawRequest(t, "/upload", "image/png", "\x89PNG\r\n\x1a\nraw-png-bytes")
+
+	head, _ := runChain(handler)
+	if err := head.ServeHTTP(httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("savefile: %v", err)
+	}
+
+	repl := req.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+	if got := repl.ReplaceAll("{http.vars.savefile.filename}", ""); got != "upload.png" {
+		t.Errorf("filename placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.saved_path}", ""); got != "raw/upload.png" {
+		t.Errorf("saved_path placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.filesize}", ""); got != "21" {
+		t.Errorf("filesize placeholder = %q", got)
+	}
+	if got := repl.ReplaceAll("{http.vars.savefile.mimetype}", ""); got != "image/png" {
+		t.Errorf("mimetype placeholder = %q", got)
 	}
 }
 

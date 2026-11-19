@@ -3,8 +3,8 @@
 > **Status:** this is the design document for the suite, kept in step with the
 > implementation. Everything below describes what the code does today, except
 > the items collected under "Not yet built" at the end, which are specified but
-> deliberately unimplemented. `README.md` is the user-facing guide; where this
-> document and the code disagree, the code is right.
+> deliberately unimplemented or blocked upstream. `README.md` is the user-facing
+> guide; where this document and the code disagree, the code is right.
 
 **Module IDs:**
 
@@ -213,14 +213,18 @@ JSON flattening, since `url.Values` is flat:
 | Placeholder | Description |
 | --- | --- |
 | `{http.vars.form.<key>}` | first submitted value for form field `<key>` |
+| `{http.vars.savefile.filename}` | sanitized client filename of the file saved most recently |
+| `{http.vars.savefile.saved_path}` | that file's destination, relative to `root_dir` |
+| `{http.vars.savefile.filesize}` | bytes written, as a decimal number |
+| `{http.vars.savefile.mimetype}` | the MIME type the bytes were detected as |
 
 The vars table is flat, so every key becomes its own placeholder rather than a
 branch of one tree, and a map stored under one key would not create child
-placeholders.
+placeholders. A request that writes several files therefore leaves the metadata
+of the last one written. The `{{ savefile }}` action cannot publish them, because
+extension functions receive no request; it returns the path it wrote instead.
 
-Saved-file metadata is deliberately **not** published to the vars tree. The
-handler records it internally as `SavedFileInfo`, and the template action
-returns the path it wrote:
+The handler also records every saved file internally as `SavedFileInfo`:
 
 ```go
 type SavedFileInfo struct {
@@ -228,7 +232,7 @@ type SavedFileInfo struct {
 	OriginalFilename string // sanitized client filename
 	SavedPath        string // final path on disk
 	Filesize         int64  // bytes written
-	MimeType         string // detected type, the routing key
+	MimeType         string // detected type
 	DeclaredMimeType string // what the client claimed
 }
 ```
@@ -362,17 +366,19 @@ lie about what was stored.
 
 ## 8. Not yet built
 
-Specified above in earlier drafts and deliberately not implemented:
+The live list is `BACKLOG.md`; this section keeps the design detail for the
+items that are still missing.
 
 * **`.FormData` and `.Savefile` on the template dot**, with the Go types
   `TemplateContext` and `SavefileContext`. The stock `templates` handler gives
   extension functions no request and no template context, and it controls the
   execution dot, so this needs an upstream change. Templates get `.Req.Form`
-  (the standard library's `url.Values`) and `{http.vars.form.*}` instead.
-* **`{http.vars.savefile.*}` placeholders** (`filename`, `saved_path`,
-  `filesize`, `mimetype`). Saved-file metadata is deliberately kept out of the
-  vars tree; the action returns the path it wrote, and `SavedFileInfo` is the
-  internal record.
+  (the standard library's `url.Values`), `{http.vars.form.*}` and
+  `{http.vars.savefile.*}` instead.
+
+Per-route limits and a per-file view of saved metadata are deliberately out of
+scope. A JSON config already sets every limit per handler instance, and the
+single flat `{http.vars.savefile.*}` set covers the common one-file request.
 
 Two additions beyond the original design, now part of it: JSON bodies (folded by
 `formdata`, else stored raw by `savefile`), and the `max_parts` and `verify_mime`
